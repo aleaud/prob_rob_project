@@ -10,4 +10,4 @@ Ouput plots are saved in the `imgs` directory.
 
 ## How to run
 
-Both estimate methods could be run in this project. If you want to estimate landmark poses via triangulation, run with `make tls-triang`, otherwise run with `make tls-pc` to estimate landmark poses using image correspondences. 
+Both estimate methods could be run in this project. If you want to estimate landmark poses via triangulation, run with `make tls-triang`, otherwise run with `make tls-pc` to estimate landmark poses using image correspondences. It is suggested to run `make clean` before testing.
