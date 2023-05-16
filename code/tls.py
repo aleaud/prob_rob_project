@@ -22,7 +22,7 @@ Output:
 def boxplus(Xr:List[RobotPose], 
             Xl:List[Landmark], 
             dx:np.array,
-            pert_limit:float=1e-3, 
+            pert_limit:float=1e-4, 
             return_np:bool=True):
     
     perturbed_poses = poses2np(Xr, len(Xr))
@@ -33,17 +33,13 @@ def boxplus(Xr:List[RobotPose],
         dxr = dx[pose_idx : pose_idx + POSE_DIM]
         #print("Pose perturbation {}: {}".format(i, dxr))
         #curr_pose = perturbed_poses[:, :, i]
-        p = np.linalg.norm(dxr)
-        if p > pert_limit:
-          perturbed_poses[:, :, i] = np.matmul(v2t(dxr), perturbed_poses[:, :, i])
+        perturbed_poses[:, :, i] = v2t(dxr) @ perturbed_poses[:, :, i]
     
     for i in range(len(Xl)):
         lm_idx = get_pert_landmark_idx(i)
         dxl = dx[lm_idx : lm_idx + LANDMARK_DIM]
         #print("Landmark perturbation {}: {}".format(i, dxl))
-        p = np.linalg.norm(dxl)
-        if p > pert_limit:
-          perturbed_landmarks[:,i] += dxl.reshape(3)
+        perturbed_landmarks[:,i] += dxl.reshape(3)
 
     if return_np:
       return perturbed_poses, perturbed_landmarks
@@ -100,8 +96,8 @@ def linearize_projections(state:Dict[str, list],
               num_inliers += 1
           chi_tot += chi
       
-          #define omega matrix: noise on odometry is 0.001
-          O = 0.0001 * np.identity(2)
+          #define omega matrix
+          O = 0.01 * np.identity(2)
 
           #update H and b at corresponding positions
           pose_idx = get_pert_pose_idx(pose_id)
@@ -229,7 +225,7 @@ def tls(state:Dict[str, list],
         proj_associations:np.array,
         poses_associations:np.array,
         cam: Camera,
-        iterations:int=1,
+        iterations:int=5,
         dmp:float=0.0,
         error_threshold:float=1e-4,
         kernel_threshold_proj:int=0,
@@ -244,13 +240,13 @@ def tls(state:Dict[str, list],
     it=0
     error = 1e6
     print("Start Total Least Squares...")
-    while it < iterations and error > error_threshold:
+    while it < iterations:#and error > error_threshold:
       #get linearized projections and update chi and inliers info
       H_proj, b_proj, chi_proj, inliers_proj = linearize_projections(state, observations, 
                                                                     proj_associations, cam,
                                                                     kernel_threshold_proj)
       chi_stats_proj[it] += chi_proj
-      num_inliers_proj[it] += inliers_proj
+      num_inliers_proj[it] = inliers_proj
 
       #get linearized poses and update chi and inliers info
       H_poses, b_poses, chi_poses, inliers_poses = linearize_poses(state,
@@ -258,7 +254,7 @@ def tls(state:Dict[str, list],
                                                                   poses_associations,
                                                                   kernel_threshold_pos)
       chi_stats_poses[it] += chi_poses
-      num_inliers_poses[it] += inliers_poses
+      num_inliers_poses[it] = inliers_poses
 
       #build H and b
       H = H_poses + H_proj
@@ -268,19 +264,18 @@ def tls(state:Dict[str, list],
       #solve linear system -> compute optimal perturbation
       dx = np.zeros([SYSTEM_SIZE, 1])
       dx[POSE_DIM:] = -np.linalg.solve(H[POSE_DIM:, POSE_DIM:], b[POSE_DIM:, 0]).reshape([-1,1])
-
       #apply perturbation
       Xr, Xl = boxplus(state["poses"], state["landmarks"], dx, True)
       state["poses"] = np2obj(Xr, 'p')
       state["landmarks"] = np2obj(Xl,'l')
       
       error = np.sum(np.absolute(dx))
-      print(f"Iteration {it} -> error: {error}")
+      print("Iteration {} -> error: {:.4f}".format(it,error))
       it+=1
     
     #resume
     it_left = iterations - it
-    print("Total Least Squares stops after {} iterations ({} are left) with a final error {} m".format(it, it_left, error))
+    print("Total Least Squares stops after {} iterations ({} are left) with a final error {:.4f} m".format(it, it_left, error))
     return Xr, Xl, chi_stats_proj, inliers_proj, chi_stats_poses, inliers_poses, H, b, it
 
         

@@ -83,10 +83,10 @@ for i in range(n):
     Xj = poses[:, :, i+1]
     pose_associations[:, i] = [i, i+1]
     #compute relative position of next pose from previous one
-    Zr[:, :, i] = np.matmul(np.linalg.inv(Xi), Xj)
+    Zr[:, :, i] = np.linalg.inv(Xi) @ Xj
 
 #set parameters
-damping_factor = 0.1
+damping_factor = 1e-2
 kernel_threshold_proj = 5000
 kernel_threshold_pose = 0.01
 max_iters = 5

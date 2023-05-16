@@ -28,14 +28,15 @@ Output:
 def projection_error_and_jacobian(Xr:RobotPose, Xl:Landmark, z:ImagePoint, cam:Camera):
     #get the 4x4 homogeneous transform 
     Xr = v2t(Xr.get_euclidean_param(3))
-    #extract rotational and translational part from inverse transform
-    Xr = np.matmul(Xr,cam.T)
-    R = Xr[0:3, 0:3].transpose()
-    t = np.matmul(-R, Xr[0:3, 3])
 
+    #extract rotational and translational part from inverse transform
+    Xr = Xr @ cam.T
+    R = Xr[0:3, 0:3].transpose()
+    t = -R @ Xr[0:3, 3]
+    
     #express landmark in camera frame
-    pw = np.matmul(R,Xl.get_vec3d().transpose()) + t
-    pcam = np.matmul(cam.K, pw)
+    pw = R @ Xl.get_vec3d().transpose() + t
+    pcam = cam.K @ pw
     pimg = pcam[0:2] / pcam[2]
     pimg = ImagePoint(z.id, pimg[0], pimg[1])
 
@@ -53,7 +54,7 @@ def projection_error_and_jacobian(Xr:RobotPose, Xl:Landmark, z:ImagePoint, cam:C
     #compute derivatives: first 3x3 block is -R (and not the identity) because we go from world to camera frame
     #for robot pose
     Jwr[0:3, 0:3] = -R
-    Jwr[0:3, 3:6] = np.matmul(R, skew(Xl.get_vec3d()))
+    Jwr[0:3, 3:6] = R @ skew(Xl.get_vec3d())
     #for landmark
     Jwl = R
     #for projection
@@ -113,8 +114,8 @@ def pose_error_and_jacobian(Xi:RobotPose, Xj:RobotPose, Z:np.array):
     #pose error
     Z_hat = np.eye(4)
     #print("Z_hat shape: {} Z shape: {}".format(Z_hat.shape, Z.shape))
-    Z_hat[0:3, 0:3] = np.matmul(Ri_t, Rj)
-    Z_hat[0:3, 3] = np.matmul(Ri_t, t_diff)
+    Z_hat[0:3, 0:3] = Ri_t @ Rj
+    Z_hat[0:3, 3] = Ri_t @ t_diff
     e = flattenIsometryByColumn(Z_hat - Z)
 
     return e, Ji, Jj

@@ -1,10 +1,10 @@
 import numpy as np
-from numpy.linalg import inv, pinv, svd, norm
+from numpy.linalg import inv, svd, norm
 from typing import List, Dict
 from pr_classes import *
 from constants import NUM_LANDMARKS, NUM_POSES
-from pr_cast import poses2np, landmarks2np, np2obj
-
+from pr_cast import *
+from errors_jacobians import is_not_visible
 
 '''
 Returns estimates of landmark positions in the world 
@@ -27,7 +27,7 @@ def triangulate(poses:List[RobotPose], observations:List[Measurement], cam:Camer
     P = cam.K @ np.eye(3,4) @ inv(cam.T)                       
 
     for i in range(len(poses)):
-        P = np.matmul(P, inv(Xr[:,:,i]))
+        P = P @ inv(Xr[:,:,i])
         for j in range(len(observations)):
             obs = observations[j]
             for (img,land_id) in zip(obs.img_points, obs.landmark_ids):
@@ -68,7 +68,7 @@ Output:
 -correspondences: list of pose id + image point pairs
 '''
 def find_correspondences(landmark_id:int, observations:List[Measurement]) -> list:
-    correspondences = list()
+    correspondences = []
     for i,obs in enumerate(observations):
         if landmark_id in obs.landmark_ids:
             img = obs.img_points[obs.landmark_ids.index(landmark_id)]
@@ -76,64 +76,76 @@ def find_correspondences(landmark_id:int, observations:List[Measurement]) -> lis
     return correspondences
 
 '''
-Compute an estimate of 3D landmark positions from image points.
+Compute an estimate of 3D landmark positions from all image points.
 Input:
 -poses: list of robot poses
 -observations : list of images
 -camera: camera model
--format: indicates how the type of the output should be (either "obj" or "mat")
+-return_obj: boolean flag which indicates what the type of the output should be 
+    if True returns list of landmarks, otherwise return stack of 3 dimensional column vectors
+
 Output:
 -Xl_guess: list of estimated landmarks
+-landmark_ids: dictionary in which we store the amount of observed point for each seen landmark
 '''
-def get_landmark_estimates_from_point_cloud(state:Dict[str,list], 
-                                            observations:List[Measurement], 
-                                            camera:Camera, return_obj:bool=True):
+def triangulate_pc(state:Dict[str,list], observations:List[Measurement], camera:Camera, return_obj:bool=True):
+
     poses = state["poses"]
     Xr = poses2np(poses)
     Xl_true = landmarks2np(state["landmarks"])
     Xl_guess = np.zeros([3, NUM_LANDMARKS])
+    landmark_system = np.zeros([2*NUM_POSES, 4*NUM_LANDMARKS])          #why? Robot poses are 2D signals, landmarks expressed in homogeneous coordinates
     landmark_ids = dict.fromkeys(range(NUM_LANDMARKS), 0) 
-    errors = list()
+    img_point_idx = 0
 
-    #compute pseudo-inverse of projection matrix
-    P = camera.K @ np.eye(3,4) @ inv(camera.T)
-    P = pinv(P)
-    
+    #compute projection matrix only once!
+    proj_mat = camera.K @ np.eye(3,4) @ inv(camera.T)
+
     for l in range(NUM_LANDMARKS):
-        point_cloud = []
+        xl = np.append(Xl_true[:,l], 1)
         correspondences = find_correspondences(l, observations)
         #print("Points in the images associated to landmark {}: {}".format(l,correspondences))
 
-        #if there is no correspondence for a landmark (i.e. it was never seen by the robot), take its actual position
-        if len(correspondences) == 0:
-            Xl_guess[:,l] = Xl_true[:,l]
-        else:
-            for i,c in correspondences:
-                img_homo = c.get_hom_vec().transpose()
-                xr = Xr[:, :, i]
-                P = np.matmul(xr,P)
-                landmark = np.matmul(P, img_homo)
-                point_cloud.append(landmark[:3])
-            
-            #get the index of the closest point w.r.t. actual position as landmark estimate
-            #if the landmark is only seen once, get the only estimate you have,
-            #otherwise compute the L2 norm to get the closest point
-            if len(point_cloud) == 1:
-                Xl_guess[:,l] = point_cloud[0]
-            else:
-                xl = Xl_true[:,l]
-                #print("True landmark: {}".format(xl))
-                diff = xl - point_cloud
-                #print("diff: {}".format(diff))
-                errors = [norm(d, ord=2, axis=0) for d in diff]
-                #print(errors)
-                m = np.argmin(errors)
-                #print(m)
-                Xl_guess[:,l] = point_cloud[m]
+        #check whether there is at least one correspondence for a landmark (i.e. it was never seen by the robot)
+        if len(correspondences) > 0:
+            for pose_idx, obs_img_point in correspondences:
+                obs_img_point = obs_img_point.get_vec()
+                xr = Xr[:, :, pose_idx]
+                #move the projection matrix to the current noisy robot pose
+                P = proj_mat @ inv(xr)
 
-            #update landmark dictionary
-            landmark_ids[l] += 1
-    
+                #estimate landmark point on the image plane
+                landmark_point = P @ xl
+                landmark_point = landmark_point[:2] / landmark_point[2]
+                img_point = ImagePoint(img_point_idx, landmark_point[0], landmark_point[1])
+
+                #filter out the bad estimates e.g. take only the visible points in the image plane
+                if not is_not_visible(camera, img_point):
+                    #print('Estimate {} at pose {} for landmark {}: {}'.format(img_point_idx, pose_idx, l, img_point.get_vec()))
+                    row = 2*pose_idx
+                    col = 4*l
+                    landmark_system[row,   col:col+4] = img_point.w * P[2,:] - P[0,:]
+                    landmark_system[row+1, col:col+4] = img_point.h * P[2,:] - P[1,:]
+                    img_point_idx += 1
+                    landmark_ids[l] += 1
+
+    counter = 0
+    seen_landmarks = {}
+    for l in range(NUM_LANDMARKS):
+        row_idx = landmark_ids[l]
+        _, b, vh = svd(landmark_system[0:2*row_idx, 4*l : 4*l+4])
+        
+        #check whether the estimated position is valid
+        x = vh[3,0] / vh[3,3]
+        y = vh[3,1] / vh[3,3]
+        z = vh[3,2] / vh[3,3]
+        est_landmark = np.array([x,y,z])
+        if len(b)==4:
+            Xl_guess[:, counter] = est_landmark
+            seen_landmarks[l] = counter
+            counter += 1
+
+    #cast output if required
     if return_obj:
         Xl_guess = np2obj(Xl_guess, 'l')
-    return Xl_guess, landmark_ids
+    return Xl_guess, seen_landmarks
